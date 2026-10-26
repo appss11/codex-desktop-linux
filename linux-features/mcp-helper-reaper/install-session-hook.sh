@@ -17,7 +17,8 @@ mkdir -p "$codex_home"
 # hook as modified and asks for review again. The running app exports its
 # current location as CODEX_LINUX_APP_DIR, so the hook resolves it at run time.
 # A native install keeps its stable directory as the fallback for sessions
-# started outside the app; an AppImage mount is temporary, so it gets none.
+# started outside the app. An AppImage mount changes on every launch and a Nix
+# store path on every rebuild, so those get none.
 fallback_app_dir="$app_dir"
 appimage_dir="${APPDIR:-}"
 appimage_dir="${appimage_dir%/}"
@@ -26,6 +27,9 @@ if [ -n "$appimage_dir" ]; then
         "$appimage_dir"|"$appimage_dir"/*) fallback_app_dir="" ;;
     esac
 fi
+case "$app_dir" in
+    /nix/store/*) fallback_app_dir="" ;;
+esac
 
 CODEX_MCP_HELPER_REAPER_FALLBACK_APP_DIR="$fallback_app_dir" \
 CODEX_MCP_HELPER_REAPER_HOOKS_FILE="$hooks_file" \

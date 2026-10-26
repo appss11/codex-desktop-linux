@@ -270,6 +270,8 @@ test("session hook command stays stable across AppImage mount paths", async () =
   run("sh", ["-c", secondCommand], {
     env: { CODEX_LINUX_APP_DIR: "", CODEX_MCP_HELPER_REAPER_TEST_LOG: callLog },
   });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(fs.existsSync(callLog), false);
 
   // Inside the app the hook follows the current mount.
   run("sh", ["-c", secondCommand], {
@@ -284,6 +286,34 @@ test("session hook command stays stable across AppImage mount paths", async () =
   assert.ok(calls.startsWith(`${appDirB}/.codex-linux/mcp-helper-reaper/codex-mcp-helper-reaper `));
   assert.ok(calls.includes(`--app-dir ${appDirB} `));
   assert.match(calls, /--codex-parent \d+ --include-orphans/);
+
+  fs.rmSync(tempDir, { recursive: true, force: true });
+});
+
+test("session hook command has no Nix store fallback", () => {
+  const tempDir = makeTempDir("codex-mcp-helper-reaper-nix-");
+  const codexHome = path.join(tempDir, "codex-home");
+  const appDir = path.join(tempDir, "opt", "codex-desktop");
+  writeLoggingReaper(appDir);
+
+  // The installer only needs an executable reaper at the given app dir; the
+  // fallback decision depends on the path prefix alone.
+  const storeApp = "/nix/store/0000000000000000000000000000000a-codex-desktop/opt/codex-desktop";
+  const shim = path.join(tempDir, "install-session-hook.sh");
+  fs.writeFileSync(
+    shim,
+    fs.readFileSync(INSTALL_SESSION_HOOK, "utf8").replace(
+      'reaper="$app_dir/.codex-linux',
+      `reaper=${JSON.stringify(appDir)}"/.codex-linux`,
+    ),
+  );
+
+  run("bash", [shim], {
+    env: { CODEX_HOME: codexHome, CODEX_LINUX_APP_DIR: storeApp, APPDIR: "" },
+  });
+  const command = reaperHookCommand(codexHome);
+  assert.doesNotMatch(command, /\/nix\/store/);
+  assert.match(command, /\|\| codex_mcp_reaper_app=''; /);
 
   fs.rmSync(tempDir, { recursive: true, force: true });
 });
