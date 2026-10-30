@@ -11,8 +11,8 @@ const START = new RegExp(
 );
 
 function matchesShellEnvironment(source) {
-  return source.includes("`Failed to load shell env`") &&
-    source.includes("resultSource:`load`") &&
+  return source.includes('"Failed to load shell env"') &&
+    source.includes('resultSource:"load"') &&
     source.includes("new AbortController");
 }
 

@@ -11,21 +11,26 @@ const vm = require("node:vm");
 const {
   applyQuitConfirmationFocus,
   descriptors,
+  hasQuitConfirmationAnchor,
   patchRequiredCoreBlockers,
 } = require("./patch.js");
+const {
+  matchesShellEnvironment,
+} = require("../shell-env-startup/shell-env.js");
 
 // This shape comes from the signed official Linux main bundle. Keep the
 // fixture independent of patch.js so upstream confirmation drift is visible.
 const OFFICIAL_BUNDLE =
-  "function qrt({isWindows:e,quitState:r,windows:i}){" +
-  "let S=!1;l.app.on(`before-quit`,o=>{if(e||r.canQuitWithoutPrompt()){S=!0,i.markAppQuitting();return}" +
-  "if(l.dialog.showMessageBoxSync({message:`Quit?`,buttons:[{messageId:`desktop.quitConfirmation.quit`},`Cancel`]})!==0){o.preventDefault();return}" +
-  "r.markQuitApproved(),S=!0,i.markAppQuitting()})," +
-  "l.app.on(`will-quit`,t=>{Promise.allSettled([flush(),save()]).then(()=>l.app.quit())})}" +
+  "function boot(){setup(),function({isWindows:e,quitState:r,windows:i}){" +
+  "let S=!1;l.app.on(\"before-quit\",o=>{if(e||r.canQuitWithoutPrompt()){S=!0,i.markAppQuitting();return}" +
+  "0!==l.dialog.showMessageBoxSync({message:\"Quit?\",buttons:[{messageId:\"desktop.quitConfirmation.quit\"},\"Cancel\"]})" +
+  "?o.preventDefault():(r.markQuitApproved(),S=!0,i.markAppQuitting())})," +
+  "l.app.on(\"will-quit\",t=>{Promise.allSettled([flush(),save()]).then(()=>l.app.quit())})}" +
+  "({isWindows:fixtureIsWindows,quitState:fixtureQuitState,windows:fixtureWindows})}" +
   "function next(){}";
 const OFFICIAL_SHELL =
   "async function load(a,b){let started=Date.now();electron.app.isPackaged||clean();" +
-  "let abort=new AbortController;logger(`Failed to load shell env`,{resultSource:`load`})}";
+  "let abort=new AbortController;logger(\"Failed to load shell env\",{resultSource:\"load\"})}";
 
 test("one required descriptor owns both portable core repairs", () => {
   assert.equal(descriptors.length, 1);
@@ -92,6 +97,14 @@ function harness({ focused = window(7), primary = window(3), others = [] } = {})
   let accepted = 0;
   let quitCalls = 0;
   let approved = false;
+  const fixtureQuitState = {
+    canQuitWithoutPrompt: () => approved,
+    markQuitApproved: () => { approved = true; },
+  };
+  const fixtureWindows = {
+    windowManager: { getPrimaryWindow: () => primary },
+    markAppQuitting: () => { accepted += 1; },
+  };
   const emitBeforeQuit = () => {
     const event = { preventDefault: () => { prevented += 1; } };
     for (const handler of handlers.get("before-quit") ?? []) {
@@ -101,6 +114,10 @@ function harness({ focused = window(7), primary = window(3), others = [] } = {})
   const context = {
     Promise,
     console: { error: (...args) => errors.push(args) },
+    fixtureIsWindows: false,
+    fixtureQuitState,
+    fixtureWindows,
+    setup() {},
     require: (name) => {
       assert.equal(name, "electron");
       return {
@@ -129,21 +146,11 @@ function harness({ focused = window(7), primary = window(3), others = [] } = {})
       },
     },
   };
-  const register = vm.runInNewContext(
-    `${applyQuitConfirmationFocus(OFFICIAL_BUNDLE)};qrt`,
+  const boot = vm.runInNewContext(
+    `${applyQuitConfirmationFocus(OFFICIAL_BUNDLE)};boot`,
     context,
   );
-  register({
-    isWindows: false,
-    quitState: {
-      canQuitWithoutPrompt: () => approved,
-      markQuitApproved: () => { approved = true; },
-    },
-    windows: {
-      windowManager: { getPrimaryWindow: () => primary },
-      markAppQuitting: () => { accepted += 1; },
-    },
-  });
+  boot();
   return {
     answer: (response) => resolveDialog({ response }),
     dialogCalls,
@@ -157,7 +164,8 @@ function harness({ focused = window(7), primary = window(3), others = [] } = {})
 
 const tick = () => new Promise(setImmediate);
 
-test("patches only the official confirmation and is idempotent", () => {
+test("patches the current official confirmation and is idempotent", () => {
+  assert.equal(hasQuitConfirmationAnchor(OFFICIAL_BUNDLE), true);
   const patched = applyQuitConfirmationFocus(OFFICIAL_BUNDLE);
   assert.match(patched, /codexLinuxQuitDialogParent\(i\)/);
   assert.match(patched, /dialog\.showMessageBox\(codexLinuxParent,codexLinuxOptions\)/);
@@ -182,6 +190,13 @@ test("fails closed when the official Quit confirmation changes or is ambiguous",
   );
   assert.throws(
     () => applyQuitConfirmationFocus(`${OFFICIAL_BUNDLE}${OFFICIAL_BUNDLE}`),
+    /Expected exactly one official Quit confirmation anchor/,
+  );
+  assert.throws(
+    () => applyQuitConfirmationFocus(
+      OFFICIAL_BUNDLE.replaceAll('"desktop.quitConfirmation.quit"',
+        "`desktop.quitConfirmation.quit`"),
+    ),
     /Expected exactly one official Quit confirmation anchor/,
   );
 });
@@ -251,11 +266,9 @@ test("applies both required repairs to uniquely anchored signed campaign modules
       source: fs.readFileSync(path.join(buildDir, name), "utf8"),
     }));
   const candidates = modules.filter(({ source }) =>
-    source.includes("messageId:`desktop.quitConfirmation.quit`"));
+    hasQuitConfirmationAnchor(source));
   const shellCandidates = modules.filter(({ source }) =>
-    source.includes("`Failed to load shell env`") &&
-      source.includes("resultSource:`load`") &&
-      source.includes("new AbortController"));
+    matchesShellEnvironment(source));
   assert.equal(
     candidates.length,
     1,
